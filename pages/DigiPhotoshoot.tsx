@@ -1,0 +1,365 @@
+
+import React, { useState } from 'react';
+import { useLanguage } from '../contexts/LanguageContext';
+import { FeatureHeader } from '../components/FeatureHeader';
+import { StepHeader } from '../components/StepHeader';
+import { ImageUploader } from '../components/ImageUploader';
+import { Spinner } from '../components/Spinner';
+import { UploadedImage } from '../types';
+import { generateSinglePhotoshootImage } from '../services/geminiService';
+import { Download as DownloadIcon, Eye as ZoomIcon, Square as SquareIcon, RectangleHorizontal as RectangleHorizontalIcon, RectangleVertical as RectangleVerticalIcon, RefreshCw, Clock, Image as ImageIcon } from '../components/icons/LucideIcons';
+import { ZoomModal } from '../components/ZoomModal';
+import { PromoCard } from '../components/PromoCard';
+
+type AspectRatio = '1:1' | '3:4' | '9:16' | '16:9';
+
+type PhotoshootResult = {
+    id: number;
+    status: 'waiting' | 'loading' | 'done' | 'error';
+    imageUrl?: string;
+    error?: string;
+};
+
+// 20 Prompt Terbaru
+const NEW_BASE_PROMPTS = [
+    "Korean-style studio portrait, posing by gently leaning against a wall, with soft, cinematic morning light streaming from a large window, creating a serene mood.",
+    "A chic Korean fashion photoshoot in a dynamic walking motion pose, illuminated with dreamy, soft-focus lighting and a gentle lens flare for a cinematic feel.",
+    "Clean K-beauty style headshot with one hand gently touching the chin, featuring flawless, glowing 'glass skin' lighting that feels both cute and high-end.",
+    "An aesthetic studio photo with a candid smile, posing while sitting on the floor, with playful, colorful gel lighting (pink and blue hues) casting soft shadows on a pastel backdrop.",
+    "K-drama inspired character portrait looking thoughtfully over their shoulder, with dramatic, moody cinematic lighting creating high contrast, using a vintage film camera as a prop.",
+    "A photorealistic color portrait of the model sitting on a black DXRacer gaming chair in a gamer room. The background features two black floating shelves displaying various sneakers including Air Jordans, and a Fortnite poster on the wall to the right. The model is posing naturally and comfortably in the gaming chair. A wooden desk with a black computer monitor, keyboard, and mouse is visible on the right side. Warm, natural room lighting, highly detailed, cinematic and vibrant.",
+    "Cozy indoor studio photoshoot, sitting in a plush armchair holding a warm cup, with warm, cozy fairy lights creating a beautiful and cute bokeh effect in the background.",
+    "A sophisticated portrait inspired by Korean actor profiles, posing with arms crossed with a single, sharp key light creating a cinematic and powerful look against a grey background.",
+    "A cinematic profile shot with strong, golden hour backlighting creating an angelic rim light effect and a beautiful silhouette.",
+    "Idol-style concept photo with an 'over the shoulder' glance, with vibrant, edgy lighting from a single neon prop, casting cinematic reflections.",
+    "A beautiful studio portrait, posing while holding a delicate peony, illuminated by soft, diffused lighting that mimics a hazy, dreamy and cinematic afternoon.",
+    "Full-body shot in a minimalist studio, posing on a sleek stool, with clean, high-key studio lighting for a fresh and airy cinematic feel.",
+    "A vibrant, high-fashion editorial shot with dynamic posing, featuring bold, contrasting neon lighting against a dark, moody background.",
+    "A soft, ethereal portrait in a blooming garden setting, posing gracefully among flowers, with natural, diffused sunlight creating a digial, fairy-tale atmosphere.",
+    "A sharp, professional corporate headshot with a confident posture, using crisp, even studio lighting and a clean, neutral grey background.",
+    "A moody, cinematic night street portrait, illuminated by the warm glow of city lights and neon signs, creating a dramatic and urban aesthetic.",
+    "A cozy, lifestyle shot sitting on a comfortable bed, with warm, golden morning light filtering through sheer curtains, creating an intimate and relaxed vibe.",
+    "A bold, avant-garde fashion portrait with striking, geometric shadows cast across the face and background, using hard, direct lighting for a highly stylized look.",
+    "A candid, joyful portrait laughing naturally, with bright, high-key lighting that feels fresh, energetic, and full of life.",
+    "A mysterious, low-key portrait with dramatic side lighting (chiaroscuro), highlighting facial contours while leaving the rest in deep, cinematic shadow."
+];
+
+export const DigiPhotoshoot: React.FC = () => {
+    const { t } = useLanguage();
+    
+    // State
+    const [sourceImage, setSourceImage] = useState<UploadedImage | null>(null);
+    const [customTheme, setCustomTheme] = useState('');
+    const [aspectRatio, setAspectRatio] = useState<AspectRatio>('3:4');
+    
+    const [results, setResults] = useState<PhotoshootResult[] | null>(null);
+    const [isGenerating, setIsGenerating] = useState<boolean>(false);
+    const [error, setError] = useState<string | null>(null);
+    const [progress, setProgress] = useState(0);
+    
+    // Zoom state
+    const [isZoomModalOpen, setIsZoomModalOpen] = useState(false);
+    const [zoomImage, setZoomImage] = useState<string | null>(null);
+
+    // Handlers
+    const handleImageUpload = (dataUrl: string, mimeType: string) => {
+        const base64 = dataUrl.split(',')[1];
+        setSourceImage({ base64, mimeType, name: 'source' });
+        setResults(null);
+        setError(null);
+        setProgress(0);
+    };
+
+    const handleGenerate = async () => {
+        if (!sourceImage) {
+            setError(t('digiPhotoshoot.errors.noImage'));
+            return;
+        }
+
+        setIsGenerating(true);
+        setError(null);
+        setProgress(0);
+        
+        // 1. Inisialisasi semua 12 slot dengan status 'waiting'
+        const initialResults: PhotoshootResult[] = NEW_BASE_PROMPTS.map((_, i) => ({
+            id: i,
+            status: 'waiting'
+        }));
+        setResults(initialResults);
+
+        const totalImages = NEW_BASE_PROMPTS.length;
+        const negativePrompt = " High quality, photorealistic, masterwork. Ensure there is absolutely no text, writing, words, or watermarks in the final image.";
+
+        // 2. Proses Satu Per Satu secara Sekuensial
+        for (let i = 0; i < totalImages; i++) {
+            // Set status slot ini menjadi loading
+            setResults(prev => {
+                if (!prev) return prev;
+                const next = [...prev];
+                next[i].status = 'loading';
+                return next;
+            });
+
+            try {
+                // Konstruksi prompt sesuai snippet terbaru
+                let finalBasePrompt = NEW_BASE_PROMPTS[i];
+                let fullPrompt = "";
+                
+                if (customTheme.trim()) {
+                    fullPrompt = `A realistic, elegant Korean-style studio photoshoot of the person in the image, focusing on the theme of '${customTheme}'. ${finalBasePrompt}${negativePrompt}`;
+                } else {
+                    fullPrompt = `${finalBasePrompt}${negativePrompt}`;
+                }
+
+                const res = await generateSinglePhotoshootImage(
+                    sourceImage,
+                    fullPrompt,
+                    "", // custom string sudah diinject ke fullPrompt di atas
+                    aspectRatio
+                );
+                
+                setResults(prev => {
+                    if (!prev) return prev;
+                    const next = [...prev];
+                    next[i] = { id: i, status: 'done', imageUrl: res.imageUrl };
+                    return next;
+                });
+            } catch (err: any) {
+                console.error(`Error slot ${i}:`, err);
+                setResults(prev => {
+                    if (!prev) return prev;
+                    const next = [...prev];
+                    // Menangani error "deskripsi teks tapi gagal gambar" secara lokal per slot
+                    next[i] = { 
+                        id: i, 
+                        status: 'error', 
+                        error: err.message?.includes("deskripsi teks") ? "Safety Filter" : "Render Failed" 
+                    };
+                    return next;
+                });
+            }
+
+            setProgress(i + 1);
+
+            // 3. Jeda antar slot (Delay estetik agar tidak keluar serentak)
+            if (i < totalImages - 1) {
+                await new Promise(resolve => setTimeout(resolve, 1200));
+            }
+        }
+        
+        setIsGenerating(false);
+    };
+
+    const handleZoom = (imageUrl: string) => {
+        setZoomImage(imageUrl);
+        setIsZoomModalOpen(true);
+    };
+
+    const handleDownload = (url: string, index: number) => {
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `digi-photoshoot-${index + 1}-${Date.now()}.png`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
+    const handleReset = () => {
+        setSourceImage(null);
+        setResults(null);
+        setCustomTheme('');
+        setError(null);
+        setIsGenerating(false);
+        setProgress(0);
+    };
+
+    const getAspectRatioClass = (ratio: AspectRatio) => {
+        switch (ratio) {
+            case '1:1': return 'aspect-square';
+            case '3:4': return 'aspect-[3/4]';
+            case '9:16': return 'aspect-[9/16]';
+            case '16:9': return 'aspect-video';
+            default: return 'aspect-[3/4]';
+        }
+    };
+
+    const inputClasses = "w-full bg-[#020617]/50 border border-white/10 rounded-xl py-3 px-4 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 text-sm transition-all placeholder-slate-500 text-white hover:border-white/20 backdrop-blur-sm";
+
+    return (
+        <div className="w-full">
+            <FeatureHeader
+                title="Digi Photoshoot"
+                description="Dapatkan 20 foto studio profesional dari satu unggahan foto menggunakan kecerdasan buatan. Sistem menggunakan antrean satu per satu untuk detail maksimal."
+                tutorialLink="https://youtu.be/IkHOFkIrCc8"
+            />
+
+            <div className="flex flex-col lg:flex-row gap-8 items-start">
+                <aside className="w-full lg:w-[400px] flex-shrink-0 lg:sticky lg:top-8 space-y-6 bg-[#020617]/50 backdrop-blur-md p-6 rounded-[2rem] shadow-[0_0_30px_rgba(0,212,255,0.05)] border border-primary-500/20">
+                    
+                    <div>
+                        <StepHeader 
+                            step={1} 
+                            title={t('digiPhotoshoot.sections.upload.title')}
+                            description={t('digiPhotoshoot.sections.upload.subtitle')}
+                        />
+                        <ImageUploader 
+                            onImageUpload={handleImageUpload}
+                            uploadedImage={sourceImage ? `data:${sourceImage.mimeType};base64,${sourceImage.base64}` : null}
+                            label={t('uploader.imageLabel')}
+                            labelKey="uploader.imageLabel"
+                        />
+                    </div>
+
+                    <div className="pt-6 border-t border-primary-500/20">
+                        <StepHeader 
+                            step={2} 
+                            title="Rasio Aspek"
+                            description="Pilih dimensi foto yang Anda inginkan."
+                        />
+                        <div className="grid grid-cols-2 gap-2">
+                            {(['1:1', '3:4', '9:16', '16:9'] as AspectRatio[]).map(r => (
+                                <button 
+                                    key={r} 
+                                    onClick={() => setAspectRatio(r)} 
+                                    disabled={isGenerating}
+                                    className={`p-3 rounded-xl flex items-center justify-center gap-2 border transition-all backdrop-blur-sm ${
+                                        aspectRatio === r 
+                                        ? 'bg-primary-500/20 border-primary-500/50 text-primary-300 shadow-[0_0_15px_rgba(0,212,255,0.3)]' 
+                                        : 'bg-[#020617]/50 border-white/10 text-slate-400 hover:border-primary-500/30 hover:text-primary-400 hover:bg-[#0f172a]'
+                                    } ${isGenerating ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                >
+                                    {r === '1:1' ? <SquareIcon className="w-4 h-4"/> : (r === '16:9' ? <RectangleHorizontalIcon className="w-4 h-4"/> : <RectangleVerticalIcon className="w-4 h-4"/>)}
+                                    <span className="text-sm font-bold">{r}</span>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="pt-6 border-t border-primary-500/20">
+                        <StepHeader 
+                            step={3} 
+                            title={t('digiPhotoshoot.sections.theme.title')}
+                            description={t('digiPhotoshoot.sections.theme.subtitle')}
+                        />
+                        <textarea
+                            rows={3}
+                            className={inputClasses}
+                            placeholder={t('digiPhotoshoot.form.customTheme.placeholder')}
+                            value={customTheme}
+                            onChange={(e) => setCustomTheme(e.target.value)}
+                            disabled={isGenerating}
+                        />
+                    </div>
+
+                    <div className="pt-4">
+                        <button
+                            onClick={handleGenerate}
+                            disabled={isGenerating || !sourceImage}
+                            className="w-full group relative flex justify-center items-center py-4 px-6 rounded-2xl text-base font-bold text-white bg-gradient-to-r from-primary-600 to-fuchsia-600 hover:from-primary-500 hover:to-fuchsia-500 shadow-[0_0_20px_rgba(0,212,255,0.4)] hover:shadow-[0_0_30px_rgba(217,70,239,0.6)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none transition-all duration-300 transform hover:-translate-y-0.5 overflow-hidden border border-white/20"
+                        >
+                            {isGenerating ? (
+                                <div className="flex items-center gap-3">
+                                    <Spinner className="h-5 w-5 text-white" />
+                                    <span className="tracking-wide">Sekuensial Render ({progress}/20)...</span>
+                                </div>
+                            ) : (
+                                <span className="tracking-wide">Mulai Sesi Photoshoot</span>
+                            )}
+                        </button>
+                        
+                        {results && !isGenerating && (
+                            <button
+                                onClick={handleReset}
+                                className="w-full mt-3 py-3 text-sm font-bold text-slate-400 hover:text-primary-400 transition-colors flex items-center justify-center gap-2"
+                            >
+                                <RefreshCw className="w-4 h-4" />
+                                Ulangi Sesi Baru
+                            </button>
+                        )}
+                        
+                        {error && (
+                            <p className="text-center text-sm text-rose-400 mt-4 bg-rose-900/20 p-3 rounded-xl border border-rose-500/30">{error}</p>
+                        )}
+                    </div>
+                </aside>
+
+                <section className="flex-1 w-full bg-[#020617]/50 backdrop-blur-2xl p-6 md:p-8 rounded-[2rem] border border-primary-500/20 shadow-[0_0_30px_rgba(0,212,255,0.05)] min-h-[500px]">
+                    <div className="flex items-center justify-between mb-8 border-b border-primary-500/20 pb-6">
+                        <div>
+                            <h3 className="text-2xl font-display font-bold text-white tracking-tight leading-none neon-text">Studio Gallery</h3>
+                            <p className="text-sm text-slate-400 mt-2 font-medium">
+                                {isGenerating ? `Mengerjakan Antrean Foto...` : `20 Variasi Photoshoot Premium`}
+                            </p>
+                        </div>
+                        {isGenerating && (
+                             <div className="flex items-center gap-2 px-3 py-1 bg-primary-900/30 text-primary-400 rounded-full text-xs font-bold animate-pulse border border-primary-500/30 shadow-[0_0_10px_rgba(0,212,255,0.2)]">
+                                <Clock className="w-3 h-3" />
+                                <span>Rendering...</span>
+                             </div>
+                        )}
+                    </div>
+
+                    {!results && !isGenerating && (
+                        <div className="flex flex-col items-center justify-center h-96 text-slate-500 text-center">
+                             <div className="w-20 h-20 bg-[#0f172a] rounded-3xl flex items-center justify-center mb-4 border border-dashed border-white/10 rotate-3 transition-transform hover:rotate-6 shadow-[0_0_15px_rgba(255,255,255,0.05)]">
+                                <ImageIcon className="w-8 h-8 opacity-40 text-slate-400" />
+                             </div>
+                            <p className="text-sm font-bold opacity-70">Harap unggah foto dan klik tombol generate untuk memulai antrean.</p>
+                        </div>
+                    )}
+
+                    {results && (
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 animate-fade-in">
+                            {results.map((result, index) => (
+                                <div key={index} className={`group relative ${getAspectRatioClass(aspectRatio)} bg-[#020617]/50 rounded-2xl overflow-hidden border border-white/10 shadow-[0_0_15px_rgba(0,212,255,0.05)] transition-all duration-500 hover:-translate-y-1 hover:shadow-[0_0_25px_rgba(0,212,255,0.2)] hover:border-primary-500/30 backdrop-blur-sm`}>
+                                    {result.status === 'waiting' && (
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 bg-[#020617]/80 backdrop-blur-sm">
+                                            <Clock className="w-6 h-6 mb-1 opacity-50" />
+                                            <span className="text-[10px] font-black uppercase tracking-widest text-primary-500/50">Antre</span>
+                                        </div>
+                                    )}
+                                    {result.status === 'loading' && (
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#020617]/80 backdrop-blur-sm animate-pulse">
+                                            <Spinner className="h-8 w-8 text-primary-500" />
+                                            <span className="text-[8px] font-black uppercase text-primary-400 mt-2 tracking-widest neon-text">Rendering</span>
+                                        </div>
+                                    )}
+                                    {result.status === 'error' && (
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center p-4 bg-rose-900/20 text-rose-400 text-center backdrop-blur-sm">
+                                            <RefreshCw className="w-6 h-6 mb-2 opacity-50" />
+                                            <p className="text-[10px] font-bold uppercase">{result.error || "Gagal"}</p>
+                                        </div>
+                                    )}
+                                    {result.status === 'done' && result.imageUrl && (
+                                        <>
+                                            <img src={result.imageUrl} alt={`Result ${index + 1}`} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
+                                            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-3 flex items-end justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                                                <div className="flex gap-2 w-full">
+                                                    <button onClick={() => handleZoom(result.imageUrl!)} className="flex-1 bg-[#0f172a]/80 hover:bg-slate-800 text-white p-2 rounded-xl backdrop-blur-md transition-all flex items-center justify-center border border-white/10 hover:border-white/30"><ZoomIcon className="w-4 h-4" /></button>
+                                                    <button onClick={() => handleDownload(result.imageUrl!, index)} className="flex-1 bg-primary-600/90 hover:bg-primary-500 text-white p-2 rounded-xl transition-all shadow-[0_0_15px_rgba(0,212,255,0.4)] flex items-center justify-center border border-primary-400/30"><DownloadIcon className="w-4 h-4" /></button>
+                                                </div>
+                                            </div>
+                                            <div className="absolute top-2 left-2 pointer-events-none">
+                                                <div className="bg-[#020617]/60 backdrop-blur-md text-primary-400 text-[8px] font-black px-2 py-0.5 rounded-md border border-primary-500/30 uppercase tracking-widest shadow-[0_0_10px_rgba(0,212,255,0.2)]">
+                                                    {index + 1}
+                                                </div>
+                                            </div>
+                                        </>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </section>
+            </div>
+            <PromoCard />
+            <ZoomModal 
+                isOpen={isZoomModalOpen}
+                onClose={() => setIsZoomModalOpen(false)}
+                imageUrl={zoomImage || ''}
+            />
+        </div>
+    );
+};
+
+export default DigiPhotoshoot;
