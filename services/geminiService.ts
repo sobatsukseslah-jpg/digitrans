@@ -84,8 +84,11 @@ export function getApiKey(): string {
         }
     }
     // Use import.meta.env for Vite or fallback to process.env if available
-    const envApiKey = typeof process !== 'undefined' && process.env ? (process.env.API_KEY || process.env.GEMINI_API_KEY) : '';
-    return envApiKey || '';
+    if (typeof process !== 'undefined' && process.env) {
+        if (process.env.GEMINI_API_KEY) return process.env.GEMINI_API_KEY;
+        if (process.env.API_KEY) return process.env.API_KEY;
+    }
+    return '';
 }
 
 // =================== Digi B-Roll Services ===================
